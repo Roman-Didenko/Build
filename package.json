@@ -1,0 +1,20 @@
+{
+	"name": "Twinfield.Build",
+	"version": "1.0.0",
+	"description": "Build scripts",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Twinfield/Build.git"
+	},
+	"dependencies": {
+		"event-stream": "^3.3.0",
+		"gulp": "^3.8.11",
+		"gulp-dotnet-assembly-info": "^0.1.10",
+		"gulp-msbuild": "^0.2.8",
+		"gulp-nunit-runner": "^0.4.1",
+		"nuget-runner": "^0.1.5",
+		"request": "^2.55.0",
+		"rimraf": "^2.3.2",
+		"yargs": "^3.7.0"
+	}
+}
