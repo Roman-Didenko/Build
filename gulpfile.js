@@ -1,24 +1,60 @@
 ﻿var gulp = require('gulp');
+var args = require('yargs').argv;
 var eventStream = require('event-stream');
 var nuget = require('nuget-runner')({ nugetPath: 'nuget.exe' });
 var fs = require('fs');
+var path = require('path');
 
-var rimraf = require('rimraf');
+var rootDir = path.dirname(__dirname);
+var outputDir = path.join(rootDir, 'Output');
+var artifactsDir = path.join(outputDir, 'Artifacts');
 
-var rootDir = '../';
+var buildVersion = require(rootDir + '/version.json').version + '.' + args.buildNumber;
+
 
 gulp.task('clean', function() {
-	rimraf.sync(rootDir + 'Output/*');
+	require('rimraf').sync(outputDir + '/*');
 });
 
-var request = require('request');
+gulp.task('set-output', function() {
+
+	var projSearchPattern = rootDir + '/**/*proj';
+	var projExcludePattern = '!' + rootDir +'/**/*.Tests.*proj';
+
+	return gulp
+		.src([projSearchPattern, projExcludePattern])
+		.pipe(setOutput())
+		.pipe(gulp.dest(rootDir));
+});
+
+var setOutput = function(){
+	return eventStream.map(function(file, callback) {
+
+		var name = path
+			.basename(file.path)
+			.slice(0, -path.extname(file.path).length);
+
+		var output = path
+			.relative(path.dirname(file.path), outputDir);
+
+		output = path.join(output, name);
+
+		var contents = file.contents.toString().replace(
+			/<OutputPath>[\s\S]*?<\/OutputPath>/g,
+			'<OutputPath>' + output + '</OutputPath>');
+		
+		file.contents = new Buffer(contents);
+		
+		callback(null, file);
+	});
+};
 
 gulp.task('nuget-download', function(callback) {
 	if(fs.existsSync('nuget.exe')) {
 		return callback();
 	}
 
-	request
+	require('request')
 		.get('http://nuget.org/nuget.exe')
 		.pipe(fs.createWriteStream('nuget.exe'))
 		.on('finish', function() {
@@ -26,11 +62,14 @@ gulp.task('nuget-download', function(callback) {
 		});
 });
 
-var restorePackages = function(){
+var restorePackages = function() {
 	return eventStream.map(function(file, callback) {
 		return nuget.restore({
 			packages: file.path,
-			source: ['http://devbuildserver/guestAuth/app/nuget/v1/FeedService.svc/','https://www.nuget.org/api/v2/']
+			source: [
+				'http://devbuildserver/guestAuth/app/nuget/v1/FeedService.svc/',
+				'https://www.nuget.org/api/v2/'
+			]
 		})
 		.then(function() { callback(); }, callback);
 	});
@@ -38,18 +77,16 @@ var restorePackages = function(){
 
 gulp.task('install-packages', ['nuget-download'], function() {
 	return gulp
-		.src(rootDir + '**/*.sln')
+		.src(rootDir + '/**/*.sln')
 		.pipe(restorePackages());
 });
 
-var args = require('yargs').argv;
-var assemblyInfo = require('gulp-dotnet-assembly-info');
 
-var buildVersion =  require(rootDir + 'version.json').version + '.' + args.buildNumber;
-
-gulp.task('assemblyInfo', function(){
+gulp.task('assemblyInfo', function() {
+	var assemblyInfo = require('gulp-dotnet-assembly-info');
+	
 	return gulp
-		.src(rootDir + '**/AssemblyInfo.cs')
+		.src(rootDir + '/**/AssemblyInfo.cs')
 		.pipe(assemblyInfo({
 			version: buildVersion,
 			fileVersion: buildVersion,
@@ -63,11 +100,12 @@ gulp.task('assemblyInfo', function(){
 		.pipe(gulp.dest(rootDir));
 });
 
-var msbuild = require('gulp-msbuild');
 
-gulp.task('build', ['clean', 'install-packages', 'assemblyInfo'], function() {
+gulp.task('build', ['clean', 'set-output', 'install-packages', 'assemblyInfo'], function() {
+
+	var msbuild = require('gulp-msbuild');
 	return gulp
-		.src(rootDir + '**/*.sln')
+		.src(rootDir + '/**/*.sln')
 		.pipe(msbuild({
 			targets: ['Clean', 'Build'],
 			errorOnFail: true,
@@ -82,10 +120,10 @@ var setTeamCityParameter = function(name, value) {
 	console.log("##teamcity[setParameter name='" + name + "' value='" + value + "']");
 };
 
-var pack = function(destination) {
+var pack = function() {
 
-	if(!fs.existsSync(destination)) {
-		fs.mkdirSync(destination);
+	if(!fs.existsSync(artifactsDir)) {
+		fs.mkdirSync(artifactsDir);
 	}
 
 	setTeamCityParameter('packageVersion', buildVersion);
@@ -94,39 +132,40 @@ var pack = function(destination) {
 		return nuget.pack({
 			spec: file.path,
 			version: buildVersion,
-			basePath: rootDir + 'Output',
-			outputDirectory: destination,
+			basePath: outputDir,
+			outputDirectory: artifactsDir,
 			noPackageAnalysis: true
 		})
 		.then(function() { callback(); }, callback); });
 };
 
-gulp.task('package-no-build', function(){
+var processNuspec = function() {
 	return gulp
-		.src(rootDir + 'Output/**/*.nuspec', { read: false })
-		.pipe(pack(rootDir + 'Output/Artifacts'));
-});
+		.src(outputDir + '/**/*.nuspec', { read: false })
+		.pipe(pack());
+};
 
-gulp.task('package', ['build'], function(){
+gulp.task('package-no-build', processNuspec);
+
+gulp.task('package', ['build'], processNuspec);
+
+gulp.task('default', ['build'], function() {});
+
+
+gulp.task('test-no-build', function() {
+	var nunit = require('gulp-nunit-runner');
+
+	var testSearchPattern = rootDir + '/**/*.Tests.dll';
+	var testExcludePattern = '!' + rootDir + '/**/obj/**';
+
 	return gulp
-		.src(rootDir + 'Output/**/*.nuspec', { read: false })
-		.pipe(pack(rootDir + 'Output/Artifacts'))
-});
-
-gulp.task('default', ['build'], function(){});
-
-var nunit = require('gulp-nunit-runner');
-
-gulp.task('test-no-build', function(){
-	return gulp
-		.src(rootDir + '**/bin/**/*Tests.dll', { read: false })
+		.src([testSearchPattern , testExcludePattern ], { read: false })
 		.pipe(nunit({ 
-			executable: rootDir + 'packages/NUnit.Runners.2.6.4/tools/nunit-console.exe',
+			executable: rootDir + '/packages/NUnit.Runners.2.6.4/tools/nunit-console.exe',
 			teamcity: args.teamcity,
 			options: {
 				stoponerror: false,
-				result: rootDir + 'Output/TestResult.xml'
+				result: path.join(outputDir, 'TestResult.xml')
 			}
 		}));
 });
-
